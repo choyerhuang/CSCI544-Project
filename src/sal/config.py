@@ -23,7 +23,7 @@ from sal.utils.hub import get_dataset_revisions
 
 @dataclass
 class Config:
-    approach: Literal["best_of_n", "beam_search", "dvts", "dynamic_beam"] = "best_of_n"
+    approach: Literal["best_of_n", "beam_search", "dvts", "dynamic_beam", "beam_search_ev", "greedy_backtrack"] = "best_of_n"
     model_path: str = "meta-llama/Llama-3.2-1B-Instruct"
     gpu_memory_utilization: float = (
         0.5  # vllm is allocated 0.5 of GPU memory, the PRM uses the rest
@@ -73,6 +73,10 @@ class Config:
     max_beams: int = 4
     dynamic_beam_delta: float = 0.3
 
+    # Greedy Backtrack Search oprtions
+    max_backtrack_depth: int = 2
+    early_stop_when_x_finished: int = 1
+
     def __post_init__(self):
         if self.approach == "dvts":
             if self.n % self.beam_width != 0:
@@ -83,6 +87,10 @@ class Config:
             # TODO: implemented a batched version
             if self.search_batch_size != 1:
                 raise ValueError("search_batch_size should be 1 for beam_search")
+            
+        if self.early_stop_when_x_finished is not None:
+            if self.early_stop_when_x_finished > self.n:
+                raise ValueError("early_stop_when_x_finished should not be greater than n.")
 
         # Setting up push to hub dataset
         if self.push_to_hub:
@@ -94,8 +102,13 @@ class Config:
                 )
             revisions = get_dataset_revisions(self.hub_dataset_id)
 
-            if self.approach in ("beam_search", "dvts", "dynamic_beam"):
+            if self.approach in ("beam_search", "dvts", "dynamic_beam", "greedy_backtrack", "beam_search_ev"):
                 self.revision = f"{self.dataset_name.replace('/', '_')}--T-{self.temperature}--top_p-{self.top_p}--n-{self.n}--m-{self.beam_width}--iters-{self.num_iterations}--look-{self.lookahead}--seed-{self.seed}--agg_strategy--{self.agg_strategy}"
+
+                if self.approach == "greedy_backtrack":
+                    self.revision += f"--backtrack-{self.max_backtrack_depth}--earlystop-{self.early_stop_when_x_finished}"
+                elif self.approach == "beam_search_ev":
+                    self.revision += f"--ensemble-voting"
             elif self.approach == "best_of_n":
                 self.revision = f"{self.dataset_name.replace('/', '_')}--T-{self.temperature}--top_p-{self.top_p}--n-{self.n}--seed-{self.seed}--agg_strategy-{self.agg_strategy}"
             else:
