@@ -33,13 +33,16 @@ def _greedy_backtrack_search(batch_of_prompts, config: Config, llm: LLM, prm: PR
             completion_tokens=0,
             #step=0,
         )
-        root_beam.step=0
+        root_beam.was_extended = False
+        root_beam.step = 0 
         all_beams.append(root_beam)
 
     for step in tqdm(range(config.num_iterations), desc="Greedy Backtracking Search"):
-        leaf_beams = [b for b in all_beams if not b.completed and not b.pruned]
+        leaf_beams = [b for b in all_beams if not b.completed and not b.pruned and not getattr(b, "was_extended", False)]
+
         if config.max_backtrack_depth is not None:
             leaf_beams = [b for b in leaf_beams if step - b.step <= config.max_backtrack_depth]
+
         if not leaf_beams:
             break
 
@@ -50,6 +53,7 @@ def _greedy_backtrack_search(batch_of_prompts, config: Config, llm: LLM, prm: PR
             b.all_scores = s[0]
 
         best_beam = max(leaf_beams, key=lambda b: aggregate_scores(b.all_scores, config.agg_strategy))
+        best_beam.was_extended = True  
 
         conv = build_conv(best_beam.prompt, best_beam.current_text, config.system_prompt)
         tokenizer = llm.get_tokenizer()
@@ -63,7 +67,6 @@ def _greedy_backtrack_search(batch_of_prompts, config: Config, llm: LLM, prm: PR
             tokenize=False,
         )
 
-        # simulate n outputs using multiple calls with n=1
         for _ in range(config.n):
             sampling_params = SamplingParams(
                 temperature=config.temperature,
@@ -82,7 +85,9 @@ def _greedy_backtrack_search(batch_of_prompts, config: Config, llm: LLM, prm: PR
                 new_beam.step = step + 1
                 new_beam.completion_tokens += gen_result.completion_tokens
                 new_beam.stop_reasons = gen_result.stop_reasons
+                print("new_beam.stop_reasons: ",new_beam.stop_reasons)
                 new_beam.completed = (text == "") or ("EOS" in new_beam.stop_reasons)
+                new_beam.was_extended = False  
                 all_beams.append(new_beam)
                 if new_beam.completed:
                     finalized_beams.append(new_beam)
@@ -90,6 +95,15 @@ def _greedy_backtrack_search(batch_of_prompts, config: Config, llm: LLM, prm: PR
         if config.early_stop_when_x_finished is not None:
             if len(finalized_beams) >= config.early_stop_when_x_finished:
                 break
+
+    if len(finalized_beams) == 0:
+        logger.warning("No finalized beams found. Using top incomplete beams as fallback.")
+        sorted_incomplete = sorted(
+            all_beams,
+            key=lambda b: aggregate_scores(b.all_scores, config.agg_strategy),
+            reverse=True
+        )
+        finalized_beams = sorted_incomplete[:config.n]
 
     if config.sort_completed:
         finalized_beams = sorted(
